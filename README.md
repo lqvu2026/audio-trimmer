@@ -8,7 +8,8 @@ A simple, private audio trimmer that runs entirely in your browser. Pick a file,
 - Drag the start and end handles on the waveform, or type exact times in seconds
 - Fade in and fade out sliders, with the fade shown on the waveform
 - Preview the trimmed and faded result before saving
-- Export as MP3, WAV, or M4A (AAC), saved as `yourfile-trimmed.mp3` (or `.wav` / `.m4a`)
+- Export as MP3, WAV, or M4A (AAC)
+- Type your own file name before exporting (Vietnamese and other accented letters are kept). It starts as `yourfile-trimmed`, and the ending (`.mp3`, `.wav`, `.m4a`) is added for you
 - Works on iPhone and desktop
 
 ## How to use
@@ -17,7 +18,7 @@ A simple, private audio trimmer that runs entirely in your browser. Pick a file,
 2. Drag the orange handles to set the start and end. Tapping the waveform moves the nearest handle.
 3. Set **Fade in** and **Fade out** if you want them.
 4. Tap **Preview** to listen. Tap again to stop.
-5. Choose an **Export format** (and a quality for MP3 and M4A), then tap **Export** to save the trimmed file.
+5. Choose an **Export format** (and a quality for MP3 and M4A), edit the **File name** if you like, then tap **Export** to save the trimmed file.
 
 ## Export formats
 

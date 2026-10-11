@@ -46,7 +46,7 @@
   canvas { width: 100%; height: 160px; display: block; border-radius: 10px; background: #0d1014; }
   .times { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-top: 12px; }
   .field label { display: block; font-size: .78rem; color: var(--muted); margin-bottom: 4px; }
-  .field input[type=number] {
+  .field input[type=number], .field input[type=text] {
     width: 100%; background: #0d1014; color: var(--text); border: 1px solid var(--line);
     border-radius: 10px; padding: 10px; font: inherit;
   }
@@ -115,6 +115,11 @@
           </select>
         </div>
       </div>
+      <div class="field" style="margin-top:12px">
+        <label for="outName">File name</label>
+        <input id="outName" type="text" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false">
+      </div>
+      <div class="hint" id="nameHint"></div>
       <div class="hint" id="fmtHint"></div>
     </div>
 
@@ -482,6 +487,7 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
       return;
     }
     fileName = f.name.replace(/\.[^.]+$/, '') || 'audio';
+    $('outName').value = fileName + '-trimmed';
     start = 0; end = buffer.duration; fadeIn = 0; fadeOut = 0;
     fadeInEl.value = 0; fadeOutEl.value = 0;
     $('fname').textContent = f.name;
@@ -746,6 +752,7 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
     qualField.classList.toggle('hidden', v === 'wav');
     const name = v === 'rec' ? recMime.ext.toUpperCase() : v.toUpperCase();
     exportBtn.textContent = 'Export ' + name;
+    $('nameHint').textContent = 'The .' + name.toLowerCase() + ' ending is added for you.';
     fmtHint.textContent = {
       wav: 'Lossless and uncompressed. Biggest files.',
       mp3: 'Small files that play almost everywhere.',
@@ -796,13 +803,21 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
         blob = await recordCompressed(kbps);
         ext = recMime.ext;
       }
-      saveBlob(blob, fileName + '-trimmed.' + ext);
+      saveBlob(blob, cleanName(ext));
     } catch (e) {
       setStatus('Export failed: ' + (e && e.message ? e.message : e));
     } finally {
       setBusy(false);
     }
   });
+
+  function cleanName(ext) {
+    let n = ($('outName').value || '').normalize('NFC')
+      .replace(/[\\/:*?"<>|\u0000-\u001f]/g, '').trim().replace(/^\.+/, '');
+    if (n.toLowerCase().endsWith('.' + ext)) n = n.slice(0, -(ext.length + 1)).trim();
+    if (!n) n = (fileName + '-trimmed').normalize('NFC');
+    return n.slice(0, 150) + '.' + ext;
+  }
 
   function saveBlob(blob, name) {
     const url = URL.createObjectURL(blob);
