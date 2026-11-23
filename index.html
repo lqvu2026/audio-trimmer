@@ -59,6 +59,16 @@
   .slider .top { display: flex; justify-content: space-between; font-size: .9rem; }
   .slider .top span:last-child { color: var(--accent); font-variant-numeric: tabular-nums; font-weight: 600; }
   input[type=range] { width: 100%; accent-color: var(--accent); margin: 8px 0 0; }
+  details.fx { border-top: 1px solid var(--line); }
+  details.fx:first-of-type { border-top: 0; }
+  details.fx > summary { list-style: none; cursor: pointer; padding: 13px 0; font-weight: 600;
+    display: flex; justify-content: space-between; align-items: center; }
+  details.fx > summary::-webkit-details-marker { display: none; }
+  details.fx > summary::after { content: '+'; color: var(--muted); font-size: 1.3rem; line-height: 1; }
+  details.fx[open] > summary::after { content: '\2013'; }
+  details.fx[open] { padding-bottom: 12px; }
+  .badge { font-size: .7rem; background: var(--accent); color: var(--accent-ink); border-radius: 999px;
+    padding: 2px 8px; margin-left: 8px; font-weight: 700; vertical-align: 2px; }
   .actions { margin-top: 16px; }
   #status { color: var(--muted); font-size: .88rem; min-height: 1.3em; margin-top: 10px; text-align: center; }
   .hint { color: var(--muted); font-size: .82rem; margin-top: 8px; }
@@ -99,6 +109,15 @@
         <div class="top"><span>Fade out</span><span id="foVal">0.0 s</span></div>
         <input id="fadeOut" type="range" min="0" max="10" step="0.1" value="0">
       </div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="align-items:flex-end">
+        <div class="field"><label for="fxPreset">Effects preset</label><select id="fxPreset"></select></div>
+        <button id="fxReset" type="button" style="flex:0 0 auto">Reset</button>
+      </div>
+      <div id="fxGroups" style="margin-top:6px"></div>
+      <div class="hint" id="fxTailHint"></div>
     </div>
 
     <div class="card">
@@ -681,6 +700,214 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
     }
   }
 
+  // ---------- Effects: echo, reverb, EQ, compressor ----------
+  const FX_DEFAULTS = { echoMix: 0, echoTime: 0.35, echoFb: 35, revMix: 0, revSize: 2,
+                        lowcut: 0, bass: 0, mid: 0, treble: 0, comp: 0 };
+  const pct = v => Math.round(v) + '%';
+  const sec = v => Number(v).toFixed(2) + ' s';
+  const sec1 = v => Number(v).toFixed(1) + ' s';
+  const dB = v => (v > 0 ? '+' : '') + Number(v).toFixed(1) + ' dB';
+  const FX_GROUPS = [
+    { id: 'echo', name: 'Echo', hint: 'Repeats the sound after a short delay. Repeats fade out and get a little darker each time.',
+      on: p => p.echoMix > 0,
+      items: [['echoMix', 'Amount', 0, 100, 1, pct], ['echoTime', 'Delay time', 0.05, 1, 0.01, sec], ['echoFb', 'Repeats', 0, 85, 1, pct]] },
+    { id: 'reverb', name: 'Reverb', hint: 'Adds the feel of a room. A bigger room size sounds like a larger space.',
+      on: p => p.revMix > 0,
+      items: [['revMix', 'Amount', 0, 100, 1, pct], ['revSize', 'Room size', 0.3, 6, 0.1, sec1]] },
+    { id: 'eq', name: 'EQ', hint: 'Low cut removes rumble and hum. Bass, mid and treble make those parts louder or softer.',
+      on: p => p.lowcut > 0 || p.bass !== 0 || p.mid !== 0 || p.treble !== 0,
+      items: [['lowcut', 'Low cut', 0, 300, 5, v => (v > 0 ? Math.round(v) + ' Hz' : 'Off')],
+              ['bass', 'Bass', -12, 12, 0.5, dB], ['mid', 'Mid', -12, 12, 0.5, dB], ['treble', 'Treble', -12, 12, 0.5, dB]] },
+    { id: 'comp', name: 'Compressor', hint: 'Evens out loud and quiet parts so the sound feels smoother and fuller. Higher is stronger.',
+      on: p => p.comp > 0,
+      items: [['comp', 'Smoothing', 0, 100, 1, v => (v > 0 ? pct(v) : 'Off')]] }
+  ];
+  const FX_PRESETS = {
+    off: {},
+    smooth: { lowcut: 80, bass: 2, mid: 1, treble: 1.5, comp: 45, revMix: 6, revSize: 0.8 },
+    warm: { bass: 3, treble: -3, comp: 25, revMix: 12, revSize: 1.2 },
+    room: { revMix: 22, revSize: 1, comp: 15 },
+    hall: { revMix: 40, revSize: 3.5, treble: -1, comp: 20 },
+    slap: { echoMix: 35, echoTime: 0.12, echoFb: 15, comp: 15 },
+    echo: { echoMix: 35, echoTime: 0.38, echoFb: 45, revMix: 12, revSize: 1.5 }
+  };
+  const FX_PRESET_LABELS = [['off', 'Off (no effects)'], ['smooth', 'Smooth voice'], ['warm', 'Warm'], ['room', 'Small room'],
+                            ['hall', 'Concert hall'], ['slap', 'Quick echo'], ['echo', 'Long echo'], ['custom', 'Custom']];
+  const REV_GAIN = 0.6;
+  const fx = Object.assign({}, FX_DEFAULTS);
+  let chain = null;
+
+  const fxActive = p => p.echoMix > 0 || p.revMix > 0 || p.lowcut > 0 || p.bass !== 0 || p.mid !== 0 || p.treble !== 0 || p.comp > 0;
+
+  // How long echo and reverb keep ringing after the clip ends (seconds)
+  function fxTail(p) {
+    let t = 0;
+    if (p.echoMix > 0) {
+      const fb = Math.min(0.9, p.echoFb / 100);
+      const n = fb > 0.01 ? Math.min(20, Math.ceil(Math.log(0.003) / Math.log(fb))) : 1;
+      t = Math.max(t, p.echoTime * n + 0.05);
+    }
+    if (p.revMix > 0) t = Math.max(t, p.revSize + 0.1);
+    return Math.min(t, 12);
+  }
+  // Extra time to render or play after the clip ends (also covers the compressor's small lookahead)
+  const fxExtra = p => (fxActive(p) ? Math.max(0.1, fxTail(p)) : 0);
+
+  // Reverb impulse response: decaying, gradually darker stereo noise (seeded, so preview and export match)
+  const irCache = new Map();
+  function getIR(c, size) {
+    const key = c.sampleRate + '|' + size.toFixed(1);
+    if (irCache.has(key)) return irCache.get(key);
+    const sr = c.sampleRate, pre = 0.02;
+    const len = Math.max(2, Math.floor(sr * (size + pre)));
+    const ir = c.createBuffer(2, len, sr);
+    for (let ch = 0; ch < 2; ch++) {
+      const d = ir.getChannelData(ch);
+      let seed = ch ? 987654321 : 123456789, lp = 0;
+      for (let i = 0; i < len; i++) {
+        const t = i / sr - pre;
+        if (t < 0) { d[i] = 0; continue; }
+        seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+        const noise = seed / 2147483648 - 1;
+        const k = 0.9 - 0.7 * Math.min(1, t / size);
+        lp += (noise - lp) * k;
+        d[i] = lp * Math.exp(-6.9 * t / size) * Math.min(1, t / 0.005);
+      }
+    }
+    irCache.set(key, ir);
+    if (irCache.size > 6) irCache.delete(irCache.keys().next().value);
+    return ir;
+  }
+
+  const compSettings = a => (a > 0 ? { th: -14 - a * 0.22, ratio: 2 + a * 0.06, knee: 18 } : { th: 0, ratio: 1, knee: 0 });
+
+  function swapIR(ch, size) {
+    const cv = ch.c.createConvolver();
+    cv.normalize = true;
+    cv.buffer = getIR(ch.c, size);
+    if (ch.conv) {
+      try { ch.tailNode.disconnect(ch.conv); } catch (e) {}
+      try { ch.conv.disconnect(); } catch (e) {}
+    }
+    ch.tailNode.connect(cv);
+    cv.connect(ch.revWet);
+    ch.conv = cv; ch.irSize = size;
+  }
+
+  // Sets all effect values. now=true sets them immediately (when building), otherwise they glide (live preview)
+  function applyChain(ch, p, now) {
+    const t = ch.c.currentTime;
+    const set = (prm, v) => { if (now) prm.value = v; else prm.setTargetAtTime(v, t, 0.03); };
+    set(ch.hp.frequency, p.lowcut > 0 ? p.lowcut : 1);
+    set(ch.low.gain, p.bass); set(ch.mid.gain, p.mid); set(ch.high.gain, p.treble);
+    if (ch.comp) {
+      const s = compSettings(p.comp);
+      set(ch.comp.threshold, s.th); set(ch.comp.ratio, s.ratio); set(ch.comp.knee, s.knee);
+    }
+    const act = fxActive(p);
+    set(ch.lim.threshold, act ? -1 : 0); set(ch.lim.ratio, act ? 20 : 1);
+    set(ch.trim.gain, act ? 0.936 : 1);   // cancels the limiter's built-in ~0.57 dB makeup gain
+    if (ch.delay) {
+      set(ch.delay.delayTime, p.echoTime);
+      set(ch.fb.gain, Math.min(0.9, p.echoFb / 100));
+      set(ch.echoWet.gain, p.echoMix / 100);
+    }
+    if (ch.revWet) {
+      set(ch.revWet.gain, (p.revMix / 100) * REV_GAIN);
+      if (p.revMix > 0 && ch.irSize !== p.revSize) swapIR(ch, p.revSize);
+    }
+  }
+
+  // input -> low cut -> EQ -> compressor -> (dry + echo + reverb) -> safety limiter -> dest
+  // live=true builds every stage so sliders can be changed during playback.
+  function buildChain(c, input, dest, p, live) {
+    const ch = { c, conv: null, irSize: null };
+    const bq = type => { const f = c.createBiquadFilter(); f.type = type; return f; };
+    ch.hp = bq('highpass'); ch.hp.Q.value = -3.01;   // Q is in dB for low/high-pass: -3.01 dB = flat (Butterworth)
+    ch.low = bq('lowshelf'); ch.low.frequency.value = 120;
+    ch.mid = bq('peaking'); ch.mid.frequency.value = 1000; ch.mid.Q.value = 0.9;
+    ch.high = bq('highshelf'); ch.high.frequency.value = 6000;
+    input.connect(ch.hp); ch.hp.connect(ch.low); ch.low.connect(ch.mid); ch.mid.connect(ch.high);
+    let tail = ch.high;
+    if (live || p.comp > 0) {
+      ch.comp = c.createDynamicsCompressor();
+      ch.comp.attack.value = 0.01; ch.comp.release.value = 0.25;
+      tail.connect(ch.comp); tail = ch.comp;
+    }
+    ch.tailNode = tail;
+    const bus = c.createGain();
+    tail.connect(bus);
+    if (live || p.echoMix > 0) {
+      ch.delay = c.createDelay(1.2); ch.fb = c.createGain(); ch.echoWet = c.createGain();
+      const fbLp = bq('lowpass'); fbLp.frequency.value = 3500; fbLp.Q.value = -3.01;
+      tail.connect(ch.delay); ch.delay.connect(ch.echoWet); ch.echoWet.connect(bus);
+      ch.delay.connect(ch.fb); ch.fb.connect(fbLp); fbLp.connect(ch.delay);
+    }
+    if (live || p.revMix > 0) {
+      ch.revWet = c.createGain();
+      ch.revWet.connect(bus);
+    }
+    ch.lim = c.createDynamicsCompressor();
+    ch.lim.knee.value = 0; ch.lim.attack.value = 0.003; ch.lim.release.value = 0.1;
+    ch.trim = c.createGain();
+    bus.connect(ch.lim); ch.lim.connect(ch.trim); ch.trim.connect(dest);
+    applyChain(ch, p, true);
+    return ch;
+  }
+
+  // ----- Effects UI -----
+  (function buildFxUI() {
+    const wrap = $('fxGroups'), sel = $('fxPreset');
+    for (const [v, l] of FX_PRESET_LABELS) {
+      const o = document.createElement('option'); o.value = v; o.textContent = l; sel.appendChild(o);
+    }
+    for (const grp of FX_GROUPS) {
+      const d = document.createElement('details'); d.className = 'fx';
+      const sm = document.createElement('summary');
+      sm.innerHTML = '<span>' + grp.name + '<span class="badge hidden" id="badge_' + grp.id + '">on</span></span>';
+      d.appendChild(sm);
+      for (const [key, label, min, max, step] of grp.items) {
+        const div = document.createElement('div'); div.className = 'slider';
+        div.innerHTML = '<div class="top"><span>' + label + '</span><span id="fxv_' + key + '"></span></div>' +
+          '<input type="range" id="fx_' + key + '" min="' + min + '" max="' + max + '" step="' + step + '" value="' + FX_DEFAULTS[key] + '">';
+        d.appendChild(div);
+      }
+      const h = document.createElement('div'); h.className = 'hint'; h.textContent = grp.hint;
+      d.appendChild(h);
+      wrap.appendChild(d);
+    }
+    wrap.addEventListener('input', e => {
+      const id = e.target && e.target.id;
+      if (!id || id.indexOf('fx_') !== 0) return;
+      fx[id.slice(3)] = parseFloat(e.target.value);
+      sel.value = 'custom';
+      fxChanged();
+    });
+    sel.addEventListener('change', () => { if (sel.value !== 'custom') setFx(FX_PRESETS[sel.value] || {}); });
+    $('fxReset').addEventListener('click', () => { sel.value = 'off'; setFx({}); });
+    fxChanged();
+  })();
+
+  function setFx(obj) {
+    Object.assign(fx, FX_DEFAULTS, obj);
+    for (const k of Object.keys(FX_DEFAULTS)) $('fx_' + k).value = fx[k];
+    fxChanged();
+  }
+
+  let fxQueued = false;
+  function fxChanged() {
+    for (const grp of FX_GROUPS) {
+      for (const [key, , , , , f] of grp.items) $('fxv_' + key).textContent = f(fx[key]);
+      $('badge_' + grp.id).classList.toggle('hidden', !grp.on(fx));
+    }
+    const t = (fx.echoMix > 0 || fx.revMix > 0) ? fxTail(fx) : 0;
+    $('fxTailHint').textContent = t > 0 ? 'Echo and reverb ring out after the end, so the saved file will be about ' + t.toFixed(1) + ' s longer.' : '';
+    if (chain && !fxQueued) {
+      fxQueued = true;
+      requestAnimationFrame(() => { fxQueued = false; if (chain) applyChain(chain, fx, false); });
+    }
+  }
+
   // ---------- Preview ----------
   playBtn.addEventListener('click', () => { playing ? stop() : play(); });
 
@@ -689,7 +916,7 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
     const c = getCtx();
     const len = end - start;
     const gain = c.createGain();
-    gain.connect(c.destination);
+    chain = buildChain(c, gain, c.destination, fx, true);
     src = c.createBufferSource();
     src.buffer = buffer;
     src.connect(gain);
@@ -699,10 +926,11 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
     playStartCtx = t0;
     playing = true;
     playBtn.textContent = '■ Stop';
-    src.onended = () => { if (playing) stop(); };
     const tick = () => {
       if (!playing) return;
-      playhead = Math.min(end, start + Math.max(0, c.currentTime - playStartCtx));
+      const el = c.currentTime - playStartCtx;
+      if (el >= len + fxExtra(fx)) { stop(); return; }
+      playhead = Math.min(end, start + Math.max(0, el));
       draw();
       raf = requestAnimationFrame(tick);
     };
@@ -711,6 +939,7 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
 
   function stop() {
     if (src) { try { src.onended = null; src.stop(); } catch (e) {} src.disconnect(); src = null; }
+    if (chain) { try { chain.trim.disconnect(); } catch (e) {} chain = null; }
     cancelAnimationFrame(raf);
     playing = false; playhead = null;
     playBtn.textContent = '▶ Preview';
@@ -756,7 +985,7 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
     fmtHint.textContent = {
       wav: 'Lossless and uncompressed. Biggest files.',
       mp3: 'Small files that play almost everywhere.',
-      rec: 'Compressed. Records in real time, so it takes as long as the clip. Keep this screen on.'
+      rec: 'Compressed. Records in real time, so it takes as long as the clip (plus any echo or reverb tail). Keep this screen on.'
     }[v];
   }
   fmtSel.addEventListener('change', updateFormatUI);
@@ -766,13 +995,17 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
   }
 
   async function renderSelection(sr) {
-    const ch = buffer.numberOfChannels;
+    const ch0 = buffer.numberOfChannels;
     const len = end - start;
-    const frames = Math.max(1, Math.round(len * sr));
+    const act = fxActive(fx);
+    const extra = fxExtra(fx);
+    const outCh = act && fx.revMix > 0 ? Math.max(2, ch0) : ch0;   // reverb makes a stereo result
+    const frames = Math.max(1, Math.round((len + extra) * sr));
     const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
-    const off = new OAC(ch, frames, sr);
+    const off = new OAC(outCh, frames, sr);
     const gain = off.createGain();
-    gain.connect(off.destination);
+    if (act) buildChain(off, gain, off.destination, fx, false);
+    else gain.connect(off.destination);
     const s = off.createBufferSource();
     s.buffer = buffer;
     s.connect(gain);
@@ -855,13 +1088,16 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
     return new Blob(parts, { type: 'audio/mpeg' });
   }
 
-  // Plays the selection (silently) into a MediaRecorder, so it takes as long as the clip.
+  // Plays the selection (silently) into a MediaRecorder, so it takes as long as the clip (plus any echo/reverb tail).
   async function recordCompressed(kbps) {
     const c = getCtx();
     const len = end - start;
+    const act = fxActive(fx);
+    const extra = fxExtra(fx);
     const dest = c.createMediaStreamDestination();
     const gain = c.createGain();
-    gain.connect(dest);
+    if (act) buildChain(c, gain, dest, fx, false);
+    else gain.connect(dest);
     const s = c.createBufferSource();
     s.buffer = buffer;
     s.connect(gain);
@@ -876,17 +1112,18 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
     applyFades(gain.gain, t0, len, fadeIn, fadeOut);
     rec.start();
     s.start(t0, start, len);
+    const total = len + extra;
     const tick = setInterval(() => {
-      setStatus('Recording ' + fmt(Math.max(0, Math.min(len, c.currentTime - t0))) + ' / ' + fmt(len) + ' — keep this screen open');
+      setStatus('Recording ' + fmt(Math.max(0, Math.min(total, c.currentTime - t0))) + ' / ' + fmt(total) + ' — keep this screen open');
     }, 250);
     try {
       await new Promise(r => { s.onended = r; });
-      await new Promise(r => setTimeout(r, 200));
+      await new Promise(r => setTimeout(r, 200 + extra * 1000));
       rec.stop();
       await stopped;
     } finally {
       clearInterval(tick);
-      try { s.disconnect(); } catch (e) {}
+      try { s.disconnect(); gain.disconnect(); } catch (e) {}
     }
     return new Blob(chunks, { type: recMime.mime.split(';')[0] });
   }
