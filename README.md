@@ -34,7 +34,7 @@ A simple, private audio trimmer that runs entirely in your browser. Pick a file,
 
 Effects are applied in this order: EQ, compressor, then echo and reverb. A gentle safety limiter keeps the result from distorting. The effects apply to every export format, and the fades are applied before the effects.
 
-Echo and reverb ring out after the clip ends, so the saved file is a little longer than the selection. The page shows how much longer.
+**Keep original length** is on by default, so the saved file is exactly as long as your selection. The echo and reverb tail is cut at the end with a very quick fade so it doesn't click. Turn it off if you want the echo and reverb to ring out after the end. The saved file is then a little longer, and the page shows how much.
 
 ## Export formats
 
@@ -77,6 +77,6 @@ If the icon shows a gray placeholder letter instead of the waveform icon:
 - M4A export uses your browser's built-in recorder, which is why it runs in real time. If the screen locks or you switch apps while it records, iOS may stop it, so use MP3 or WAV for long clips.
 - Very long files use more memory, since the browser decodes the whole file to trim it.
 - Effects are processed in your browser, so they can sound a little different between Safari, Chrome and other browsers. Preview what you hear and adjust to taste.
-- Echo and reverb tails make the saved file longer. M4A (real-time recording) also takes that extra time to save.
+- With **Keep original length** turned off, echo and reverb tails make the saved file longer, and M4A (real-time recording) also takes that extra time to save.
 - The fade length can never be longer than the selected section. If the two fades together would be longer, the other one shortens.
 - Everything happens on your device. The page itself still needs an internet connection to load, since there is no offline mode.

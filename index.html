@@ -69,6 +69,8 @@
   details.fx[open] { padding-bottom: 12px; }
   .badge { font-size: .7rem; background: var(--accent); color: var(--accent-ink); border-radius: 999px;
     padding: 2px 8px; margin-left: 8px; font-weight: 700; vertical-align: 2px; }
+  .check { display: flex; gap: 10px; align-items: center; margin-top: 14px; font-size: .92rem; cursor: pointer; }
+  .check input { width: 20px; height: 20px; accent-color: var(--accent); flex: 0 0 auto; margin: 0; }
   .actions { margin-top: 16px; }
   #status { color: var(--muted); font-size: .88rem; min-height: 1.3em; margin-top: 10px; text-align: center; }
   .hint { color: var(--muted); font-size: .82rem; margin-top: 8px; }
@@ -117,6 +119,7 @@
         <button id="fxReset" type="button" style="flex:0 0 auto">Reset</button>
       </div>
       <div id="fxGroups" style="margin-top:6px"></div>
+      <label class="check"><input type="checkbox" id="keepLen" checked> <span>Keep original length (cut the echo and reverb tail)</span></label>
       <div class="hint" id="fxTailHint"></div>
     </div>
 
@@ -751,7 +754,18 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
     return Math.min(t, 12);
   }
   // Extra time to render or play after the clip ends (also covers the compressor's small lookahead)
-  const fxExtra = p => (fxActive(p) ? Math.max(0.1, fxTail(p)) : 0);
+  const keepLen = () => $('keepLen').checked;
+  // With "Keep original length" on, nothing is added after the end. Otherwise echo/reverb are allowed to ring out.
+  const fxExtra = p => (!fxActive(p) || keepLen() ? 0 : Math.max(0.1, fxTail(p)));
+  // When a tail would be cut off at the end, fade it out quickly so it doesn't click
+  function endFadeNode(c, dest, t0, len, p) {
+    if (!(keepLen() && (p.echoMix > 0 || p.revMix > 0))) return dest;
+    const g = c.createGain(), f = Math.min(0.25, len / 2);
+    g.gain.setValueAtTime(1, t0 + len - f);
+    g.gain.linearRampToValueAtTime(0, t0 + len);
+    g.connect(dest);
+    return g;
+  }
 
   // Reverb impulse response: decaying, gradually darker stereo noise (seeded, so preview and export match)
   const irCache = new Map();
@@ -901,12 +915,17 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
       $('badge_' + grp.id).classList.toggle('hidden', !grp.on(fx));
     }
     const t = (fx.echoMix > 0 || fx.revMix > 0) ? fxTail(fx) : 0;
-    $('fxTailHint').textContent = t > 0 ? 'Echo and reverb ring out after the end, so the saved file will be about ' + t.toFixed(1) + ' s longer.' : '';
+    $('fxTailHint').textContent = t > 0
+      ? (keepLen() ? 'The echo and reverb tail is cut at the end, so the saved file keeps the same length.'
+                   : 'Echo and reverb ring out after the end, so the saved file will be about ' + t.toFixed(1) + ' s longer.')
+      : '';
     if (chain && !fxQueued) {
       fxQueued = true;
       requestAnimationFrame(() => { fxQueued = false; if (chain) applyChain(chain, fx, false); });
     }
   }
+
+  $('keepLen').addEventListener('change', () => { if (playing) stop(); fxChanged(); });
 
   // ---------- Preview ----------
   playBtn.addEventListener('click', () => { playing ? stop() : play(); });
@@ -916,11 +935,11 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
     const c = getCtx();
     const len = end - start;
     const gain = c.createGain();
-    chain = buildChain(c, gain, c.destination, fx, true);
+    const t0 = c.currentTime + 0.03;
+    chain = buildChain(c, gain, endFadeNode(c, c.destination, t0, len, fx), fx, true);
     src = c.createBufferSource();
     src.buffer = buffer;
     src.connect(gain);
-    const t0 = c.currentTime + 0.03;
     applyFades(gain.gain, t0, len, fadeIn, fadeOut);
     src.start(t0, start, len);
     playStartCtx = t0;
@@ -985,7 +1004,7 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
     fmtHint.textContent = {
       wav: 'Lossless and uncompressed. Biggest files.',
       mp3: 'Small files that play almost everywhere.',
-      rec: 'Compressed. Records in real time, so it takes as long as the clip (plus any echo or reverb tail). Keep this screen on.'
+      rec: 'Compressed. Records in real time, so it takes as long as the clip. Keep this screen on.'
     }[v];
   }
   fmtSel.addEventListener('change', updateFormatUI);
@@ -1004,7 +1023,7 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
     const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
     const off = new OAC(outCh, frames, sr);
     const gain = off.createGain();
-    if (act) buildChain(off, gain, off.destination, fx, false);
+    if (act) buildChain(off, gain, endFadeNode(off, off.destination, 0, len, fx), fx, false);
     else gain.connect(off.destination);
     const s = off.createBufferSource();
     s.buffer = buffer;
@@ -1096,7 +1115,8 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
     const extra = fxExtra(fx);
     const dest = c.createMediaStreamDestination();
     const gain = c.createGain();
-    if (act) buildChain(c, gain, dest, fx, false);
+    const t0 = c.currentTime + 0.05;
+    if (act) buildChain(c, gain, endFadeNode(c, dest, t0, len, fx), fx, false);
     else gain.connect(dest);
     const s = c.createBufferSource();
     s.buffer = buffer;
@@ -1108,7 +1128,6 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
       rec.onstop = res;
       rec.onerror = e => rej((e && e.error) || new Error('Recording failed'));
     });
-    const t0 = c.currentTime + 0.05;
     applyFades(gain.gain, t0, len, fadeIn, fadeOut);
     rec.start();
     s.start(t0, start, len);
